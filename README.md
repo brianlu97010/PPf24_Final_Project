@@ -16,8 +16,12 @@ These changes are designed to enhance performance and parallel processing capabi
 
 ## Installation
 ```bash
-git clone https://github.com/yourusername/modified-ffjpeg
+git clone https://github.com/brianlu97010/PPf24_Final_Project
+```
+```bash
 cd PPf24_Final_Project
+```
+```bash
 make
 ```
 
