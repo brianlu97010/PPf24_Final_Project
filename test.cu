@@ -20,7 +20,7 @@ int main(int argc, char* argv[])
     }
 
     double startTime = CycleTimer::currentSeconds();
-    if(!encoder.encodeToJPG("outputFileName", 50)) {
+    if(!encoder.encodeToJPG(outputFileName, 50)) {
         return 1;
     }
     double endTime = CycleTimer::currentSeconds();
