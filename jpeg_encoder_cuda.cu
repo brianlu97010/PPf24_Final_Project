@@ -4,14 +4,6 @@
 #include <cuda_runtime.h>
 #include "jpeg_encoder_cuda.h"
 
-// MACRO for CUDA Error checking
-#define CHECK_CUDA(call) { \
-    cudaError_t err = call; \
-    if(err != cudaSuccess) { \
-        printf("CUDA error %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
-        exit(1); \
-    } \
-}
 #define BLOCK_SIZE 8
 #define THREADS_PER_BLOCK 64  // 8x8 threads for each block
 
@@ -540,51 +532,51 @@ __device__ void forwardDCT(
     __shared__ float block_data[8][8];
     const float PI = 3.1415926f;
     
-    // 載入資料到 shared memory - 修正索引計算
-    int tx = threadIdx.x % 8;
-    int ty = threadIdx.x / 8;
+    // 使用 2D thread 索引
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
     
-    if (threadIdx.x < 64) {
-        int global_x = block_x * 8 + tx;
-        int global_y = block_y * 8 + ty;
-		block_data[ty][tx] = 0.0f;	
-        if (global_x < width && global_y < height) {  // 確保不超出邊界
-            block_data[ty][tx] = channel_data[global_y * width + global_x];
-        }
+    // 載入數據到 shared memory
+    int global_x = block_x * 8 + tx;
+    int global_y = block_y * 8 + ty;
+
+    block_data[ty][tx] = 0.0f;	
+
+    if (global_x < width && global_y < height) {  // 確保不超出邊界
+        block_data[ty][tx] = channel_data[global_y * width + global_x];
     }
-    
+
     __syncthreads();
     
     // 計算 DCT
-    if (threadIdx.x < 64) {
-        int u = tx;
-        int v = ty;
-        
-        float alpha_u = (u == 0) ? 1.0f/sqrtf(8.0f) : 0.5f;
-        float alpha_v = (v == 0) ? 1.0f/sqrtf(8.0f) : 0.5f;
-        
-        float sum = 0.0f;
+    int u = tx;
+    int v = ty;
+    
+    float alpha_u = (u == 0) ? 1.0f/sqrtf(8.0f) : 0.5f;
+    float alpha_v = (v == 0) ? 1.0f/sqrtf(8.0f) : 0.5f;
+    
+    float sum = 0.0f;
+    #pragma unroll
+    for (int y = 0; y < 8; y++) {
         #pragma unroll
-        for (int y = 0; y < 8; y++) {
-            #pragma unroll
-            for (int x = 0; x < 8; x++) {
-                float data = block_data[y][x];
-                float cos_u = cosf((2.0f * x + 1.0f) * u * PI / 16.0f);
-                float cos_v = cosf((2.0f * y + 1.0f) * v * PI / 16.0f);
-                sum += data * cos_u * cos_v;
-            }
+        for (int x = 0; x < 8; x++) {
+            float data = block_data[y][x];
+            float cos_u = cosf((2.0f * x + 1.0f) * u * PI / 16.0f);
+            float cos_v = cosf((2.0f * y + 1.0f) * v * PI / 16.0f);
+            sum += data * cos_u * cos_v;
         }
-        
-        sum *= alpha_u * alpha_v;
-        
-        // 修正輸出索引計算
-        int zigzag_idx = ZigZag_d[v * 8 + u];
-        float quantized = sum / quant_table[zigzag_idx];
-        
-        // 修正 block 偏移計算
-        int block_idx = (block_y * (width/8) + block_x) * 64;
-        fdc_data[block_idx + zigzag_idx] = (short)((short)(quantized + 16384.5f) - 16384);
     }
+    
+    sum *= alpha_u * alpha_v;
+    
+    // 修正輸出索引計算
+    int zigzag_idx = ZigZag_d[v * 8 + u];
+    float quantized = sum / quant_table[zigzag_idx];
+    
+    // 修正 block 偏移計算
+    int block_idx = (block_y * (width/8) + block_x) * 64;
+    fdc_data[block_idx + zigzag_idx] = (short)((short)(quantized + 16384.5f) - 16384);
+
 }
 
 // 修改主 kernel
@@ -601,28 +593,30 @@ __global__ void jpegCompressKernel(
 {
     int block_x = blockIdx.x;
     int block_y = blockIdx.y;
-    int thread_id = threadIdx.x;
+    
+    // 直接使用 threadIdx.x 和 threadIdx.y
+    int local_x = threadIdx.x;
+    int local_y = threadIdx.y;
+    
+    // 計算在 original image 中的位置
+    int global_x = block_x * 8 + local_x;
+    int global_y = block_y * 8 + local_y;
     
     // Step 1: Color Transform
-    if (thread_id < 64) {
-        int local_x = thread_id % 8;
-        int local_y = thread_id / 8;
-        int global_x = block_x * 8 + local_x;
-        int global_y = block_y * 8 + local_y;
+    // 有用 if 做邊界檢查
+    if (global_x < width && global_y < height) {
+        // 取得 channel R, G, B 的 value
+        int rgb_pos = (global_y*width + global_x) * 3;
+        float R = rgb_buffer[rgb_pos + 2];
+        float G = rgb_buffer[rgb_pos + 1];
+        float B = rgb_buffer[rgb_pos];
         
-        if (global_x < width && global_y < height) {
-            int rgb_pos = (global_y * width + global_x) * 3;
-            float R = rgb_buffer[rgb_pos + 2];
-            float G = rgb_buffer[rgb_pos + 1];
-            float B = rgb_buffer[rgb_pos];
-            
-            int pos = global_y * width + global_x;
-            y_channel[pos] = (char)(0.299f * R + 0.587f * G + 0.114f * B - 128);
-            cb_channel[pos] = (char)(-0.1687f * R - 0.3313f * G + 0.5f * B);
-            cr_channel[pos] = (char)(0.5f * R - 0.4187f * G - 0.0813f * B);
-        }
+        int pos = global_y * width + global_x;
+        y_channel[pos] = (char)(0.299f * R + 0.587f * G + 0.114f * B - 128);
+        cb_channel[pos] = (char)(-0.1687f * R - 0.3313f * G + 0.5f * B);
+        cr_channel[pos] = (char)(0.5f * R - 0.4187f * G - 0.0813f * B);
     }
-    
+        
     __syncthreads();
     
     // Step 2: DCT and Quantization
@@ -639,13 +633,23 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
     FILE* fp = fopen(fileName, "wb");
     if(fp==0) return false;
 
+    // 創建 CUDA events
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float encode_time = 0.0f;
+
+
     _initQualityTables(quality_scale);
     _write_jpeg_header(fp);
     
+    // 開始計時 - 記憶體配置階段
+    cudaEventRecord(start);
+    
     // Copy tables to device constant memory
-    CHECK_CUDA(cudaMemcpyToSymbol(YTable_d, m_YTable, sizeof(m_YTable)));
-    CHECK_CUDA(cudaMemcpyToSymbol(CbCrTable_d, m_CbCrTable, sizeof(m_CbCrTable)));
-    CHECK_CUDA(cudaMemcpyToSymbol(ZigZag_d, ZigZag, sizeof(ZigZag)));
+    cudaMemcpyToSymbol(YTable_d, m_YTable, sizeof(m_YTable));
+    cudaMemcpyToSymbol(CbCrTable_d, m_CbCrTable, sizeof(m_CbCrTable));
+    cudaMemcpyToSymbol(ZigZag_d, ZigZag, sizeof(ZigZag));
 
     // Allocate device memory
     unsigned char *d_rgb;
@@ -657,35 +661,67 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
     size_t dct_size = m_width * m_height * sizeof(short);
     
     // Allocate and copy data to device
-    CHECK_CUDA(cudaMalloc(&d_rgb, rgb_size));
-    CHECK_CUDA(cudaMalloc(&d_y, channel_size));
-    CHECK_CUDA(cudaMalloc(&d_cb, channel_size));
-    CHECK_CUDA(cudaMalloc(&d_cr, channel_size));
-    CHECK_CUDA(cudaMalloc(&d_y_dct, dct_size));
-    CHECK_CUDA(cudaMalloc(&d_cb_dct, dct_size));
-    CHECK_CUDA(cudaMalloc(&d_cr_dct, dct_size));
+    cudaMalloc(&d_rgb, rgb_size);
+    cudaMalloc(&d_y, channel_size);
+    cudaMalloc(&d_cb, channel_size);
+    cudaMalloc(&d_cr, channel_size);
+    cudaMalloc(&d_y_dct, dct_size);
+    cudaMalloc(&d_cb_dct, dct_size);
+    cudaMalloc(&d_cr_dct, dct_size);
     
-    CHECK_CUDA(cudaMemcpy(d_rgb, m_rgbBuffer, rgb_size, cudaMemcpyHostToDevice));
+    cudaMemcpy(d_rgb, m_rgbBuffer, rgb_size, cudaMemcpyHostToDevice);
 
-    // Launch kernel
-    dim3 block(64); // 64 threads for 8x8 block
-    dim3 grid((m_width + 7)/8, (m_height + 7)/8);
+    // 記錄記憶體配置時間
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float mem_time;
+    cudaEventElapsedTime(&mem_time, start, stop);
+    printf("Memory allocation and transfer time: %.2f ms\n", mem_time);
+    encode_time += mem_time;
+
+    // 啟動 kernel - 開始計時
+    cudaEventRecord(start);
     
-    jpegCompressKernel<<<grid, block>>>(
+    // Launch kernel
+    dim3 numBlocks((m_width + 7)/8, (m_height + 7)/8);
+    dim3 threadsPerBlock(8, 8); // 64 threads for 8x8 block
+    jpegCompressKernel<<<numBlocks, threadsPerBlock>>>(
         d_rgb, d_y, d_cb, d_cr,
         d_y_dct, d_cb_dct, d_cr_dct,
         m_width, m_height
     );
     
+    // 記錄 kernel 執行時間
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float kernel_time;
+    cudaEventElapsedTime(&kernel_time, start, stop);
+    printf("Kernel execution time: %.2f ms\n", kernel_time);
+    encode_time += kernel_time;
+    
+    // 開始計時 - return value from device
+    cudaEventRecord(start);
+
     // Allocate host memory for results
     short* h_y_dct = new short[m_width * m_height];
     short* h_cb_dct = new short[m_width * m_height];
     short* h_cr_dct = new short[m_width * m_height];
     
     // Copy results back to host
-    CHECK_CUDA(cudaMemcpy(h_y_dct, d_y_dct, dct_size, cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(h_cb_dct, d_cb_dct, dct_size, cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(h_cr_dct, d_cr_dct, dct_size, cudaMemcpyDeviceToHost));
+    cudaMemcpy(h_y_dct, d_y_dct, dct_size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_cb_dct, d_cb_dct, dct_size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_cr_dct, d_cr_dct, dct_size, cudaMemcpyDeviceToHost);
+
+    // 記錄結果傳回時間
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float copy_back_time;
+    cudaEventElapsedTime(&copy_back_time, start, stop);
+    printf("Copy back time: %.2f ms\n", copy_back_time);
+    encode_time += copy_back_time;
+
+    // 開始計時 - Huffman 編碼階段
+    cudaEventRecord(start);
 
     // Entropy encoding (kept on CPU)
     short prev_DC_Y = 0, prev_DC_Cb = 0, prev_DC_Cr = 0;
@@ -733,6 +769,14 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
         }
     }
 
+    // 記錄 Huffman 編碼時間
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float huffman_time;
+    cudaEventElapsedTime(&huffman_time, start, stop);
+    printf("Huffman encoding time: %.2f ms\n", huffman_time);
+    encode_time += huffman_time;
+
     // Cleanup
     if (newBytePos != 7) {
         _write_byte_(newByte, fp);
@@ -752,6 +796,11 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
     cudaFree(d_cb_dct);
     cudaFree(d_cr_dct);
     
+    // 清理 CUDA events
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    printf("Total execution time: %.2f ms\n", encode_time);
+
     fclose(fp);
     return true;
 }
