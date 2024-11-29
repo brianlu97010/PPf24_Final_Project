@@ -19,13 +19,13 @@ git clone https://github.com/brianlu97010/PPf24_Final_Project
 cd PPf24_Final_Project
 ```
 ```bash
-make
+make clean && make
 ```
 
 ## Usage
 To encode an image:
 ```bash
-./jpeg_encoder {inputfile.bmp}
+./jpeg_encoder {inputFile.bmp} {outputFile.jpg}
 ```
 
 ## Performance Results
