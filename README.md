@@ -38,7 +38,7 @@ To encode an image:
 - 呂彥鋒  brianlu.cs13@nycu.edu.tw
   
 ## References
-- [1] rockcarry/ffjpeg: a simple jpeg codec. (github.com)  
+- [1] [rockcarry/ffjpeg: a simple jpeg codec. (github.com) ](https://github.com/thejinchao/jpeg_encoder/tree/master) 
 - [2]【平行運算】CUDA教學(一) 概念介紹 - 都會阿嬤 (weikaiwei.com)
 - [3] 開發人員部落格系列：初學者「CUDA 總複習」教學 - NVIDIA 台灣官方部落格
 - [4] https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html
