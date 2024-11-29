@@ -6,6 +6,7 @@
 #include <memory.h>
 #include <math.h>
 #include <cuda.h>
+#include <cuda_runtime.h>
 #include "jpeg_encoder.h"
 
 namespace {
@@ -325,8 +326,15 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale) {
     //文件头
     _write_jpeg_header(fp);
 
+	cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float encode_time = 0.0f, mem_time;
+
     short prev_DC_Y = 0, prev_DC_Cb = 0, prev_DC_Cr = 0;
     int newByte = 0, newBytePos = 7;
+
+	cudaEventRecord(start);
 
     short* yQuantizedData, *cbQuantizedData, *crQuantizedData;
 	cudaMallocHost((void**)&yQuantizedData, m_width * m_height * sizeof(short));
@@ -366,6 +374,15 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale) {
 
     cudaFree(d_rgbBuffer);
 
+	cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&mem_time, start, stop);
+    printf("Memory allocation and color transform time: %.2f ms\n", mem_time);
+    encode_time += mem_time;
+
+
+	cudaEventRecord(start);
+
     dim3 blockDim(8, 8);
     dim3 gridDim(m_width / 8, m_height / 8);
 
@@ -394,6 +411,13 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale) {
     cudaFree(d_cr_output);
     cudaFree(d_quant_table_Y);
     cudaFree(d_quant_table_CbCr);
+
+	cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&mem_time, start, stop);
+    printf("Memory allocation and DCT time: %.2f ms\n", mem_time);
+    encode_time += mem_time;
+	printf("Encoding time: %.2f ms\n", encode_time);
 	
     for(int yPos = 0; yPos < m_height; yPos += 8) {
         for(int xPos = 0; xPos < m_width; xPos += 8) {
