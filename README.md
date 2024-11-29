@@ -25,7 +25,7 @@ make clean && make
 ## Usage
 To encode an image:
 ```bash
-./jpeg_encoder {inputFile.bmp} {outputFile.jpg}
+./jpeg {inputFile.bmp} {outputFile.jpg}
 ```
 
 ## Performance Results
