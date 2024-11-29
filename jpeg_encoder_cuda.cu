@@ -4,15 +4,11 @@
 #include <cuda_runtime.h>
 #include "jpeg_encoder_cuda.h"
 
-#define BLOCK_SIZE 8
-#define THREADS_PER_BLOCK 64  // 8x8 threads for each block
-
 // Device Constants
 namespace {
     __constant__ char ZigZag_d[64];
     __constant__ unsigned char YTable_d[64];
     __constant__ unsigned char CbCrTable_d[64];
-    const float PI = 3.1415926f;
 }
 
 // Useful table for jpeg
@@ -616,7 +612,7 @@ __global__ void jpegCompressKernel(
         cb_channel[pos] = (char)(-0.1687f * R - 0.3313f * G + 0.5f * B);
         cr_channel[pos] = (char)(0.5f * R - 0.4187f * G - 0.0813f * B);
     }
-        
+
     __syncthreads();
     
     // Step 2: DCT and Quantization
