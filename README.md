@@ -34,20 +34,18 @@ make clean && make
 ```
 
 ## Performance Results
-================================= Performance Results ==========================
-Average over 5 runs:
+Testing Hardware : 
+待補
 
-CUDA Memory Operations:
-   Memory Allocation & Transfer : 16.97 ms
-   Kernel Execution             : 12.40 ms
+### Main Results
+| Test Image               | (Avg.) Original Processing Time | (Avg.) CUDA Version Processing Time | SpeedUp |
+|--------------------------|---------------------------------|-------------------------------------|---------|
+| img/sample_5184×3456.bmp | 4.526 s                         | 0.688 s                             | 6.579x  |
 
-Execution Time:
-   Serial Version               : 4.526 seconds
-   CUDA Version                 : 0.688 seconds
-   Speedup                      : 6.579x
-
-================================================================================
-
+### CUDA Operation
+| Test Image               | (Avg.) Memory Allocation & Transfer Time | (Avg.) Kernel Execution Time |
+|--------------------------|------------------------------------------|------------------------------|
+| img/sample_5184×3456.bmp | 0.01697 s                                | 0.0124 s                     | 
 
 ## Contributors
 - 呂彥鋒  brianlu.cs13@nycu.edu.tw
