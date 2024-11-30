@@ -11,9 +11,9 @@ all: $(TARGET)
 
 $(TARGET) : $(OBJ)
 	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJ)
-	
+
 %.o: %.cu
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJ) $(TARGET)
+	rm -f *.o $(TARGET)
