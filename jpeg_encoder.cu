@@ -1,13 +1,13 @@
-#ifdef _MSC_VER
-#define _CRT_SECURE_NO_WARNINGS
-#endif
-
 #include <stdio.h>
 #include <memory.h>
 #include <math.h>
 #include <cuda.h> 
 
 #include "jpeg_encoder.h"
+
+#define USED_SHARED_MEMORY 1
+#define USED_PINNED_MEMORY 1
+#define USED_CONSTANT_MEMORY 0
 
 namespace {
 //-------------------------------------------------------------------------------
@@ -227,284 +227,6 @@ bool JpegEncoder::readFromBMP(const char* fileName)
 	return successed;
 }
 
-
-
-//-------------------------------------------------------------------------------
-/*
-bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
-{
-	//尚未读取？
-	if(m_rgbBuffer==0 || m_width==0 || m_height==0) return false;
-
-	//输出文件
-	FILE* fp = fopen(fileName, "wb");
-	if(fp==0) return false;
-
-	//初始化量化表
-	_initQualityTables(quality_scale);
-
-	//文件头
-	_write_jpeg_header(fp);
-
-	short prev_DC_Y = 0, prev_DC_Cb = 0, prev_DC_Cr = 0;
-	int newByte=0, newBytePos=7;
-
-
-	for(int yPos=0; yPos<m_height; yPos+=8)
-	{
-		for (int xPos=0; xPos<m_width; xPos+=8)
-		{
-			char yData[64], cbData[64], crData[64];
-			short yQuant[64], cbQuant[64], crQuant[64];
-
-			//转换颜色空间, rgbBuffer -> (yData, cbData, crData), [-128,128]
-			unsigned char* rgbBuffer = m_rgbBuffer + yPos * m_width * 3 + xPos * 3;
-			_convertColorSpace(rgbBuffer, yData, cbData, crData);
-
-			BitString outputBitString[128];
-			int bitStringCounts;
-
-			//Y通道压缩(yData -> yQuant)
-			_foword_FDC(yData, yQuant, m_YTable);
-			_doHuffmanEncoding(yQuant, prev_DC_Y, m_Y_DC_Huffman_Table, m_Y_AC_Huffman_Table, outputBitString, bitStringCounts); 
-			_write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
-
-			//Cb通道压缩(cbData -> cbQuant)
-			_foword_FDC(cbData, cbQuant, m_CbCrTable);			
-			_doHuffmanEncoding(cbQuant, prev_DC_Cb, m_CbCr_DC_Huffman_Table, m_CbCr_AC_Huffman_Table, outputBitString, bitStringCounts);
-			_write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
-
-			//Cr通道压缩(crData -> crQuant)
-			_foword_FDC(crData, crQuant, m_CbCrTable);
-			_doHuffmanEncoding(crQuant, prev_DC_Cr, m_CbCr_DC_Huffman_Table, m_CbCr_AC_Huffman_Table, outputBitString, bitStringCounts);
-			_write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
-		}
-	}
-
-	//flush remain data
-	if (newBytePos != 7) {
-		_write_byte_(newByte, fp);
-	}
-
-	_write_word_(0xFFD9, fp); //Write End of Image Marker   
-	
-	fclose(fp);
-
-	return true;
-}
-
-*/
-
-__global__ void process(int m_width, int m_height, unsigned char* d_rgbBuffer,
-						char* d_yData, char* d_cbData, char* d_crData,
-						short* d_yQuant, short* d_cbQuant, short* d_crQuant,
-						unsigned char* m_YTable, unsigned char* m_CbCrTable)
-{
-    const float PI = 3.1415926f;
-    const int ZigZag[64] = { 
-        0, 1, 5, 6,14,15,27,28,
-        2, 4, 7,13,16,26,29,42,
-        3, 8,12,17,25,30,41,43,
-        9,11,18,24,31,40,44,53,
-        10,19,23,32,39,45,52,54,
-        20,22,33,38,46,51,55,60,
-        21,34,37,47,50,56,59,61,
-        35,36,48,49,57,58,62,63
-    };
-    
-    int blockX = blockIdx.x;
-    int blockY = blockIdx.y;
-    int threadX = threadIdx.x;
-    int threadY = threadIdx.y;
-
-    int globalX = blockX * 8 + threadX;
-    int globalY = blockY * 8 + threadY;
-
-    // Shared memory for storing 8x8 block data
-    //__shared__ float sharedBlock[8][8];
-
-    // Ensure we don't go out of bounds
-
-    int blockIndex = (blockY * gridDim.x + blockX) * 64;
-    int threadIndex = threadY * 8 + threadX;
-
-    if (globalX < m_width && globalY < m_height)
-    {
-        // Offset to the RGB buffer for the current pixel
-        int rgbIndex = (globalY * m_width + globalX) * 3;
-        unsigned char R = d_rgbBuffer[rgbIndex + 2];
-        unsigned char G = d_rgbBuffer[rgbIndex + 1];
-        unsigned char B = d_rgbBuffer[rgbIndex];
-
-        // Calculate Y, Cb, Cr values
-        d_yData[blockIndex + threadIndex] = (char)(0.299f * R + 0.587f * G + 0.114f * B -128);
-        d_cbData[blockIndex + threadIndex] = (char)(-0.1687f * R - 0.3313f * G + 0.5f * B);
-        d_crData[blockIndex + threadIndex] = (char)(0.5f * R - 0.4187f * G - 0.0813f * B);
-    }
-
-    __syncthreads();
-
-    if (globalX < m_width && globalY < m_height)
-    { 
-        // Forward Discrete Cosine Transform (DCT)
-        float alpha_u = (threadX == 0) ? 1.f / sqrtf(8.0f) : 0.5f;
-        float alpha_v = (threadY == 0) ? 1.f / sqrtf(8.0f) : 0.5f;
-
-        // Temporary variables for DCT calculation
-        float tempY = 0.0f, tempCb = 0.0f, tempCr = 0.0f;
-
-        for (int y = 0; y < 8; y++) 
-	{
-            for (int x = 0; x < 8; x++) 
-            {
-                int idx = y * 8 + x;
-                float yVal = d_yData[blockIndex + idx];
-                float cbVal = d_cbData[blockIndex + idx];
-                float crVal = d_crData[blockIndex + idx];
-
-                float cosX = cosf((2 * x + 1) * threadX * PI / 16.0f);
-                float cosY = cosf((2 * y + 1) * threadY * PI / 16.0f);
-
-                tempY += yVal * cosX * cosY;
-                tempCb += cbVal * cosX * cosY;
-                tempCr += crVal * cosX * cosY;
-            }
-        }
-
-        // ZigZag index for quantized data
-        int zigZagIndex = ZigZag[threadY * 8 + threadX];
-
-        // Quantization
-        d_yQuant[blockIndex + zigZagIndex] = (short)((alpha_u * alpha_v * tempY) / m_YTable[zigZagIndex]);
-        d_cbQuant[blockIndex + zigZagIndex] = (short)((alpha_u * alpha_v * tempCb) / m_CbCrTable[zigZagIndex]);
-        d_crQuant[blockIndex + zigZagIndex] = (short)((alpha_u * alpha_v * tempCr) / m_CbCrTable[zigZagIndex]);
-    }
-}
-
-
-bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
-{
-	if(m_rgbBuffer==0 || m_width==0 || m_height==0) return false;
-	
-	FILE* fp = fopen(fileName, "wb");
-        if(fp==0) return false;
-	
-	_initQualityTables(quality_scale);
-	
-	_write_jpeg_header(fp);
-	
-	// 創建 CUDA events
-        cudaEvent_t start, stop;
-        cudaEventCreate(&start);
-        cudaEventCreate(&stop);
-	float mem_time;
-	//CUDA-based color convert & fdc
-	cudaEventRecord(start);
-
-	unsigned char* d_rgbBuffer;
-	//cudaHostRegister(m_rgbBuffer, buffersize, cudaHostRegisterMapped);
-	//cudaHostGetDevicePointer((void **)&d_rgbBuffer, m_rgbBuffer, 0);
-	
-	const int blockSize = 8;
-        const int gridX = m_width / 8;
-        const int gridY = m_height / 8;
-        const dim3 block(blockSize, blockSize);
-        const dim3 grid(gridX, gridY);
-
-	char *d_yData, *d_cbData, *d_crData;
-        short *d_yQuant, *d_cbQuant, *d_crQuant;
-        unsigned char* d_quant_table_Y;
-        unsigned char* d_quant_table_CbCr;
-
-	cudaMalloc((void**)&d_rgbBuffer, m_width * m_height * 3 * sizeof(unsigned char));
-        cudaMalloc((void**)&d_yData, 64 * gridX * gridY * sizeof(char));
-        cudaMalloc((void**)&d_cbData, 64 * gridX * gridY * sizeof(char));
-        cudaMalloc((void**)&d_crData, 64 * gridX * gridY * sizeof(char));
-        cudaMalloc((void**)&d_yQuant, 64 * gridX * gridY * sizeof(short));
-        cudaMalloc((void**)&d_cbQuant, 64 * gridX * gridY * sizeof(short));
-        cudaMalloc((void**)&d_crQuant, 64 * gridX * gridY * sizeof(short));
-        cudaMalloc((void**)&d_quant_table_Y, 64 * sizeof(unsigned char));
-        cudaMalloc((void**)&d_quant_table_CbCr, 64 * sizeof(unsigned char));
-
-	cudaMemcpy(d_rgbBuffer, m_rgbBuffer, m_width * m_height * 3 * sizeof(unsigned char), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_quant_table_Y, m_YTable, 64 * sizeof(unsigned char), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_quant_table_CbCr, m_CbCrTable, 64 * sizeof(unsigned char), cudaMemcpyHostToDevice);
-
-        process<<<grid, block>>>(m_width, m_height, d_rgbBuffer, 
-							d_yData, d_cbData, d_crData,
-							d_yQuant, d_cbQuant, d_crQuant,
-							d_quant_table_Y, d_quant_table_CbCr);
-    
-    
-	cudaFree(d_rgbBuffer);
-
-	cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        cudaEventElapsedTime(&mem_time, start, stop);
-        printf("Memory allocation and color transform time: %.2f ms\n", mem_time);
-
-        short* yQuant = new short[64 * gridX * gridY];
-        short* cbQuant = new short[64 * gridX * gridY];
-        short* crQuant = new short[64 * gridX * gridY];
-        cudaMemcpy(yQuant, d_yQuant, 64 * gridX * gridY * sizeof(short), cudaMemcpyDeviceToHost);
-        cudaMemcpy(cbQuant, d_cbQuant, 64 * gridX * gridY * sizeof(short), cudaMemcpyDeviceToHost);
-        cudaMemcpy(crQuant, d_crQuant, 64 * gridX * gridY * sizeof(short), cudaMemcpyDeviceToHost);
-        
-	/*
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        float mem_time;
-        cudaEventElapsedTime(&mem_time, start, stop);
-        printf("Memory allocation and transfer time: %.2f ms\n", mem_time);
-
-	*/
-        //huffman coding
-        short prev_DC_Y = 0, prev_DC_Cb = 0, prev_DC_Cr = 0;
-	int newByte=0, newBytePos=7;
-
-        for (int blockIdx = 0; blockIdx < gridX * gridY; ++blockIdx) {
-        BitString outputBitString[128];
-        int bitStringCounts;
-
-        _doHuffmanEncoding(yQuant + blockIdx * 64, prev_DC_Y, m_Y_DC_Huffman_Table, m_Y_AC_Huffman_Table, outputBitString, bitStringCounts);
-        _write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
-
-        _doHuffmanEncoding(cbQuant + blockIdx * 64, prev_DC_Cb, m_CbCr_DC_Huffman_Table, m_CbCr_AC_Huffman_Table, outputBitString, bitStringCounts);
-        _write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
-
-        _doHuffmanEncoding(crQuant + blockIdx * 64, prev_DC_Cr, m_CbCr_DC_Huffman_Table, m_CbCr_AC_Huffman_Table, outputBitString, bitStringCounts);
-        _write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
-        }       
-
-        if (newBytePos != 7) {
-            _write_byte_(newByte, fp);
-    }
-
-    _write_word_(0xFFD9, fp);
-    
-    /*
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&mem_time, start, stop);
-    printf("Total time: %.2f ms\n", mem_time);
-*/
-    
-    delete[] yQuant;
-    delete[] cbQuant;
-    delete[] crQuant;
-    cudaFree(d_yData);
-    cudaFree(d_cbData);
-    cudaFree(d_crData);
-    cudaFree(d_yQuant);
-    cudaFree(d_cbQuant);
-    cudaFree(d_crQuant);
-    
-    fclose(fp);
-    return true;
-	
-}
-
-
 //-------------------------------------------------------------------------------
 void JpegEncoder::_initHuffmanTables(void)
 {
@@ -684,58 +406,6 @@ void JpegEncoder::_write_bitstring_(const BitString* bs, int counts, int& newByt
 }
 
 //-------------------------------------------------------------------------------
-void JpegEncoder::_convertColorSpace(const unsigned char* rgbBuffer, char* yData, char* cbData, char* crData)
-{
-	for (int y=0; y<8; y++)
-	{
-		const unsigned char* p = rgbBuffer + y*m_width*3;
-		for (int x=0; x<8; x++)
-		{
-			unsigned char B = *p++;
-			unsigned char G = *p++;
-			unsigned char R = *p++;
-
-			yData[y*8+x] = (char)(0.299f * R + 0.587f * G + 0.114f * B - 128);
-			cbData[y*8+x] = (char)(-0.1687f * R - 0.3313f * G + 0.5f * B );
-			crData[y*8+x] = (char)(0.5f * R - 0.4187f * G - 0.0813f * B);
-		}
-	}
-}
-
-//-------------------------------------------------------------------------------
-void JpegEncoder::_foword_FDC(const char* channel_data, short* fdc_data, const unsigned char* quant_table)
-{
-	const float PI = 3.1415926f;
-	for(int v=0; v<8; v++)
-	{
-		for(int u=0; u<8; u++)
-		{
-			float alpha_u = (u==0) ? 1.f/sqrtf(8.0f) : 0.5f;
-			float alpha_v = (v==0) ? 1.f/sqrtf(8.0f) : 0.5f;
-
-			float temp = 0.f;
-			for(int x=0; x<8; x++)
-			{
-				for(int y=0; y<8; y++)
-				{
-					float data = channel_data[y*8+x];
-
-					data *= cosf((2*x+1)*u*PI/16.0f);
-					data *= cosf((2*y+1)*v*PI/16.0f);
-
-					temp += data;
-				}
-			}
-			int zigZagIndex = ZigZag[v * 8 + u];
-			
-			//量化
-			temp *= alpha_u*alpha_v/ quant_table[zigZagIndex];
-			fdc_data[zigZagIndex] = (short) ((short)(temp + 16384.5) - 16384);
-		}
-	}
-}
-
-//-------------------------------------------------------------------------------
 void JpegEncoder::_write_jpeg_header(FILE* fp)
 {
 	//SOI
@@ -818,4 +488,306 @@ void JpegEncoder::_write_jpeg_header(FILE* fp)
 	_write_byte_(0, fp);			//Ss not interesting, they should be 0,63,0
 	_write_byte_(0x3F, fp);			//Se
 	_write_byte_(0, fp);			//Bf
+}
+
+
+//-------------------------------------------------------------------------------
+/* CUDA Version*/
+//-------------------------------------------------------------------------------
+__constant__ char ZigZag_d[64] =
+{ 
+0, 1, 5, 6,14,15,27,28,
+2, 4, 7,13,16,26,29,42,
+3, 8,12,17,25,30,41,43,
+9,11,18,24,31,40,44,53,
+10,19,23,32,39,45,52,54,
+20,22,33,38,46,51,55,60,
+21,34,37,47,50,56,59,61,
+35,36,48,49,57,58,62,63 
+};
+
+#if USED_SHARED_MEMORY 
+__global__ void process(int m_width, int m_height, unsigned char* d_rgbBuffer,
+                       char* d_yData, char* d_cbData, char* d_crData,
+                       short* d_yQuant, short* d_cbQuant, short* d_crQuant,
+                       unsigned char* m_YTable, unsigned char* m_CbCrTable)
+{
+    const float PI = 3.1415926f;
+
+    // 宣告 shared memory 來存儲 8x8 區塊的數據
+    __shared__ float s_yBlock[8][8];
+    __shared__ float s_cbBlock[8][8];
+    __shared__ float s_crBlock[8][8];
+    
+    int blockX = blockIdx.x;
+    int blockY = blockIdx.y;
+    int threadX = threadIdx.x;
+    int threadY = threadIdx.y;
+    int globalX = blockX * 8 + threadX;
+    int globalY = blockY * 8 + threadY;
+    
+    int blockIndex = (blockY * gridDim.x + blockX) * 64;
+    int threadIndex = threadY * 8 + threadX;
+
+    // 先載入數據到 shared memory
+    if (globalX < m_width && globalY < m_height) {
+        int rgbIndex = (globalY * m_width + globalX) * 3;
+        unsigned char R = d_rgbBuffer[rgbIndex + 2];
+        unsigned char G = d_rgbBuffer[rgbIndex + 1];
+        unsigned char B = d_rgbBuffer[rgbIndex];
+
+        // 計算 YCbCr 並存入 shared memory
+        s_yBlock[threadY][threadX] = (0.299f * R + 0.587f * G + 0.114f * B - 128);
+        s_cbBlock[threadY][threadX] = (-0.1687f * R - 0.3313f * G + 0.5f * B);
+        s_crBlock[threadY][threadX] = (0.5f * R - 0.4187f * G - 0.0813f * B);
+
+        // 同時寫入全局記憶體
+        d_yData[blockIndex + threadIndex] = s_yBlock[threadY][threadX];
+        d_cbData[blockIndex + threadIndex] = s_cbBlock[threadY][threadX];
+        d_crData[blockIndex + threadIndex] = s_crBlock[threadY][threadX];
+    } else {
+        s_yBlock[threadY][threadX] = 0.0f;
+        s_cbBlock[threadY][threadX] = 0.0f;
+        s_crBlock[threadY][threadX] = 0.0f;
+    }
+    
+    __syncthreads();
+
+    if (globalX < m_width && globalY < m_height) {
+        float alpha_u = (threadX == 0) ? 1.f / sqrtf(8.0f) : 0.5f;
+        float alpha_v = (threadY == 0) ? 1.f / sqrtf(8.0f) : 0.5f;
+        
+        float tempY = 0.0f, tempCb = 0.0f, tempCr = 0.0f;
+        
+        #pragma unroll
+        for (int y = 0; y < 8; y++) {
+            float cosY = cosf((2 * y + 1) * threadY * PI / 16.0f);
+            #pragma unroll
+            for (int x = 0; x < 8; x++) {
+                float cosX = cosf((2 * x + 1) * threadX * PI / 16.0f);
+                float cosFactor = cosX * cosY;
+                
+                // 直接從 shared memory 讀取數據
+                tempY += s_yBlock[y][x] * cosFactor;
+                tempCb += s_cbBlock[y][x] * cosFactor;
+                tempCr += s_crBlock[y][x] * cosFactor;
+            }
+        }
+
+        // ZigZag & Quantization
+        int zigZagIndex = ZigZag_d[threadY * 8 + threadX];
+        float alpha = alpha_u * alpha_v;
+        
+        d_yQuant[blockIndex + zigZagIndex] = (short)(alpha * tempY / m_YTable[zigZagIndex]);
+        d_cbQuant[blockIndex + zigZagIndex] = (short)(alpha * tempCb / m_CbCrTable[zigZagIndex]);
+        d_crQuant[blockIndex + zigZagIndex] = (short)(alpha * tempCr / m_CbCrTable[zigZagIndex]);
+    }
+}
+#else
+__global__ void process(int m_width, int m_height, unsigned char* d_rgbBuffer,
+						char* d_yData, char* d_cbData, char* d_crData,
+						short* d_yQuant, short* d_cbQuant, short* d_crQuant,
+						unsigned char* m_YTable, unsigned char* m_CbCrTable)
+{
+    const float PI = 3.1415926f;
+    
+    int blockX = blockIdx.x;
+    int blockY = blockIdx.y;
+    int threadX = threadIdx.x;
+    int threadY = threadIdx.y;
+
+    int globalX = blockX * 8 + threadX;
+    int globalY = blockY * 8 + threadY;
+
+    // Ensure we don't go out of bounds
+
+    int blockIndex = (blockY * gridDim.x + blockX) * 64;
+    int threadIndex = threadY * 8 + threadX;
+
+    if (globalX < m_width && globalY < m_height)
+    {
+        // Offset to the RGB buffer for the current pixel
+        int rgbIndex = (globalY * m_width + globalX) * 3;
+        unsigned char R = d_rgbBuffer[rgbIndex + 2];
+        unsigned char G = d_rgbBuffer[rgbIndex + 1];
+        unsigned char B = d_rgbBuffer[rgbIndex];
+
+        // Calculate Y, Cb, Cr values
+        d_yData[blockIndex + threadIndex] = (char)(0.299f * R + 0.587f * G + 0.114f * B -128);
+        d_cbData[blockIndex + threadIndex] = (char)(-0.1687f * R - 0.3313f * G + 0.5f * B);
+        d_crData[blockIndex + threadIndex] = (char)(0.5f * R - 0.4187f * G - 0.0813f * B);
+    }
+
+    __syncthreads();
+
+    if (globalX < m_width && globalY < m_height)
+    { 
+        // Forward Discrete Cosine Transform (DCT)
+        float alpha_u = (threadX == 0) ? 1.f / sqrtf(8.0f) : 0.5f;
+        float alpha_v = (threadY == 0) ? 1.f / sqrtf(8.0f) : 0.5f;
+
+        // Temporary variables for DCT calculation
+        float tempY = 0.0f, tempCb = 0.0f, tempCr = 0.0f;
+
+        for (int y = 0; y < 8; y++) 
+	{
+            for (int x = 0; x < 8; x++) 
+            {
+                int idx = y * 8 + x;
+                float yVal = d_yData[blockIndex + idx];
+                float cbVal = d_cbData[blockIndex + idx];
+                float crVal = d_crData[blockIndex + idx];
+
+                float cosX = cosf((2 * x + 1) * threadX * PI / 16.0f);
+                float cosY = cosf((2 * y + 1) * threadY * PI / 16.0f);
+
+                tempY += yVal * cosX * cosY;
+                tempCb += cbVal * cosX * cosY;
+                tempCr += crVal * cosX * cosY;
+            }
+        }
+
+        // ZigZag index for quantized data
+        int zigZagIndex = ZigZag_d[threadY * 8 + threadX];
+
+        // Quantization
+        d_yQuant[blockIndex + zigZagIndex] = (short)((alpha_u * alpha_v * tempY) / m_YTable[zigZagIndex]);
+        d_cbQuant[blockIndex + zigZagIndex] = (short)((alpha_u * alpha_v * tempCb) / m_CbCrTable[zigZagIndex]);
+        d_crQuant[blockIndex + zigZagIndex] = (short)((alpha_u * alpha_v * tempCr) / m_CbCrTable[zigZagIndex]);
+    }
+}
+#endif
+
+bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
+{
+	if(m_rgbBuffer==0 || m_width==0 || m_height==0) return false;
+	
+	FILE* fp = fopen(fileName, "wb");
+	if(fp==0) return false;
+	
+	_initQualityTables(quality_scale);
+	
+	_write_jpeg_header(fp);
+	
+	// 創建 CUDA events
+	// CUDA-based color convert & fdc
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	float mem_time;
+	cudaEventRecord(start);
+
+	unsigned char* d_rgbBuffer;
+	
+	const int blockSize = 8;
+	const int gridX = m_width / 8;
+	const int gridY = m_height / 8;
+	const dim3 block(blockSize, blockSize);
+	const dim3 grid(gridX, gridY);
+
+	char *d_yData, *d_cbData, *d_crData;
+	short *d_yQuant, *d_cbQuant, *d_crQuant;
+	unsigned char* d_quant_table_Y;
+	unsigned char* d_quant_table_CbCr;
+
+	cudaMalloc((void**)&d_rgbBuffer, m_width * m_height * 3 * sizeof(unsigned char));
+	cudaMalloc((void**)&d_yData, m_width*m_height * sizeof(char));
+	cudaMalloc((void**)&d_cbData, m_width*m_height * sizeof(char));
+	cudaMalloc((void**)&d_crData, m_width*m_height * sizeof(char));
+	cudaMalloc((void**)&d_yQuant, m_width*m_height * sizeof(short));
+	cudaMalloc((void**)&d_cbQuant, m_width*m_height * sizeof(short));
+	cudaMalloc((void**)&d_crQuant, m_width*m_height * sizeof(short));
+	cudaMalloc((void**)&d_quant_table_Y, 64 * sizeof(unsigned char));
+	cudaMalloc((void**)&d_quant_table_CbCr, 64 * sizeof(unsigned char));
+
+	cudaMemcpy(d_rgbBuffer, m_rgbBuffer, m_width * m_height * 3 * sizeof(unsigned char), cudaMemcpyHostToDevice);
+	#if USED_CONSTANT_MEMORY
+	cudaMemcpyToSymbol(d_quant_table_Y, m_YTable, sizeof(m_YTable));
+    cudaMemcpyToSymbol(d_quant_table_CbCr, m_CbCrTable, sizeof(m_CbCrTable));
+	#else
+	cudaMemcpy(d_quant_table_Y, m_YTable, 64 * sizeof(unsigned char), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_quant_table_CbCr, m_CbCrTable, 64 * sizeof(unsigned char), cudaMemcpyHostToDevice);
+	#endif
+
+	cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&mem_time, start, stop);
+	printf("Memory allocation and transfer time: %.2f ms\n", mem_time);
+
+	float kernel_time = 0.0f;
+    cudaEventRecord(start);
+    process<<<grid, block>>>(m_width, m_height, d_rgbBuffer, 
+                        d_yData, d_cbData, d_crData,
+                        d_yQuant, d_cbQuant, d_crQuant,
+                        d_quant_table_Y, d_quant_table_CbCr);
+    
+    
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&kernel_time, start, stop);
+    printf("Kernel Launching Time : %.2f ms\n", kernel_time);
+	cudaFree(d_rgbBuffer);
+
+	short* yQuant;
+	short* cbQuant;
+	short* crQuant;
+
+	#if USED_PINNED_MEMORY
+	cudaHostAlloc((void**)&yQuant, m_width*m_height * sizeof(short), cudaHostAllocDefault);
+	cudaHostAlloc((void**)&cbQuant, m_width*m_height * sizeof(short), cudaHostAllocDefault);
+	cudaHostAlloc((void**)&crQuant, m_width*m_height * sizeof(short), cudaHostAllocDefault);
+	#else
+	yQuant = new short[m_width*m_height];
+	cbQuant = new short[m_width*m_height];
+	crQuant = new short[m_width*m_height];
+    #endif  
+
+	cudaMemcpy(yQuant, d_yQuant, m_width*m_height * sizeof(short), cudaMemcpyDeviceToHost);
+	cudaMemcpy(cbQuant, d_cbQuant, m_width*m_height * sizeof(short), cudaMemcpyDeviceToHost);
+	cudaMemcpy(crQuant, d_crQuant, m_width*m_height * sizeof(short), cudaMemcpyDeviceToHost);
+
+	//huffman coding
+	short prev_DC_Y = 0, prev_DC_Cb = 0, prev_DC_Cr = 0;
+	int newByte=0, newBytePos=7;
+
+        for (int blockIdx = 0; blockIdx < gridX * gridY; ++blockIdx) {
+			BitString outputBitString[128];
+			int bitStringCounts;
+
+			_doHuffmanEncoding(yQuant + blockIdx * 64, prev_DC_Y, m_Y_DC_Huffman_Table, m_Y_AC_Huffman_Table, outputBitString, bitStringCounts);
+			_write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
+
+			_doHuffmanEncoding(cbQuant + blockIdx * 64, prev_DC_Cb, m_CbCr_DC_Huffman_Table, m_CbCr_AC_Huffman_Table, outputBitString, bitStringCounts);
+			_write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
+
+			_doHuffmanEncoding(crQuant + blockIdx * 64, prev_DC_Cr, m_CbCr_DC_Huffman_Table, m_CbCr_AC_Huffman_Table, outputBitString, bitStringCounts);
+			_write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
+        }       
+
+        if (newBytePos != 7) {
+            _write_byte_(newByte, fp);
+    }
+
+    _write_word_(0xFFD9, fp);
+    
+    #if USED_PINNED_MEMORY
+	cudaFreeHost(yQuant);
+	cudaFreeHost(cbQuant);
+	cudaFreeHost(crQuant);
+	#else
+    delete[] yQuant;
+    delete[] cbQuant;
+    delete[] crQuant;
+    #endif
+
+	cudaFree(d_yData);
+    cudaFree(d_cbData);
+    cudaFree(d_crData);
+    cudaFree(d_yQuant);
+    cudaFree(d_cbQuant);
+    cudaFree(d_crQuant);
+    
+    fclose(fp);
+    return true;
+	
 }
