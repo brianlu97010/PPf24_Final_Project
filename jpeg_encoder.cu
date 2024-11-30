@@ -2,7 +2,6 @@
 #include <memory.h>
 #include <math.h>
 #include <cuda.h> 
-
 #include "jpeg_encoder.h"
 
 #define USED_SHARED_MEMORY 1
@@ -789,5 +788,4 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
     
     fclose(fp);
     return true;
-	
 }
