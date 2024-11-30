@@ -14,6 +14,9 @@ public:
 	/** 压缩到jpg文件中，quality_scale表示质量，取值范围(0,100), 数字越大压缩比例越高*/
 	bool encodeToJPG(const char* fileName, int quality_scale);
 
+	/* CUDA Optimization */
+	bool encodeToJPG_CUDA(const char* fileName, int quality_scale);
+
 private:
 	int				m_width;
 	int				m_height;

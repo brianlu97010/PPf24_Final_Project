@@ -1,0 +1,13 @@
+================================= Performance Results ==========================
+Average over 5 runs:
+
+CUDA Memory Operations:
+   Memory Allocation & Transfer : 16.97 ms
+   Kernel Execution             : 12.40 ms
+
+Execution Time:
+   Serial Version               : 4.526 seconds
+   CUDA Version                 : 0.688 seconds
+   Speedup                      : 6.579x
+
+================================================================================

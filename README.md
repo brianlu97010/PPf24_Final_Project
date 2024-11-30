@@ -23,15 +23,30 @@ make clean && make
 ```
 
 ## Usage
-To encode an image:
+### To encode an image:
 ```bash
 ./jpeg {inputFile.bmp} {outputFile.jpg}
 ```
 
+### To run the test
+```bash
+./run_test.sh
+```
+
 ## Performance Results
-| Test Image | Original Processing Time | Modified Processing Time |
-|------------|--------------------------|--------------------------|
-| image1.jpg | 2.5s                     | 1.2s                     |
+================================= Performance Results ==========================
+Average over 5 runs:
+
+CUDA Memory Operations:
+   Memory Allocation & Transfer : 16.97 ms
+   Kernel Execution             : 12.40 ms
+
+Execution Time:
+   Serial Version               : 4.526 seconds
+   CUDA Version                 : 0.688 seconds
+   Speedup                      : 6.579x
+
+================================================================================
 
 
 ## Contributors
