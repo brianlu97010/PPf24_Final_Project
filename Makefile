@@ -35,6 +35,6 @@ $(TARGET): $(OBJ)
 
 # Clean rule
 clean:
-	rm -f $(OBJ) $(TARGET)
+	rm -f *.o $(TARGET)
 
 .PHONY: all clean

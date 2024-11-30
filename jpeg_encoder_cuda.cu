@@ -4,9 +4,22 @@
 #include <cuda_runtime.h>
 #include "jpeg_encoder_cuda.h"
 
+#define USE_PINNED_MEMORY 1
+#define HUFFMAN_ALGO_OPTION 0
+
 // Device Constants
 namespace {
-    __constant__ char ZigZag_d[64];
+    __constant__ char ZigZag_d[64] =
+    { 
+        0, 1, 5, 6,14,15,27,28,
+        2, 4, 7,13,16,26,29,42,
+        3, 8,12,17,25,30,41,43,
+        9,11,18,24,31,40,44,53,
+        10,19,23,32,39,45,52,54,
+        20,22,33,38,46,51,55,60,
+        21,34,37,47,50,56,59,61,
+        35,36,48,49,57,58,62,63 
+    };
     __constant__ unsigned char YTable_d[64];
     __constant__ unsigned char CbCrTable_d[64];
 }
@@ -408,8 +421,6 @@ void JpegEncoder::_write_bitstring_(const BitString* bs, int counts, int& newByt
 	}
 }
 
-
-
 //-------------------------------------------------------------------------------
 void JpegEncoder::_write_jpeg_header(FILE* fp)
 {
@@ -495,26 +506,9 @@ void JpegEncoder::_write_jpeg_header(FILE* fp)
 	_write_byte_(0, fp);			//Bf
 }
 
-//////////////////////////////////////////////////
+// --------------------------------------------------------------------------------------------
 // CUDA Version
-// // Color transform device function
-// __device__ void colorTransform(
-//     const unsigned char* rgbBuffer,
-//     int stride,
-//     char* yData,
-//     char* cbData,
-//     char* crData,
-//     int pos) 
-// {
-//     unsigned char B = rgbBuffer[pos * 3];
-//     unsigned char G = rgbBuffer[pos * 3 + 1];
-//     unsigned char R = rgbBuffer[pos * 3 + 2];
-
-//     yData[pos] = (char)(0.299f * R + 0.587f * G + 0.114f * B - 128);
-//     cbData[pos] = (char)(-0.1687f * R - 0.3313f * G + 0.5f * B);
-//     crData[pos] = (char)(0.5f * R - 0.4187f * G - 0.0813f * B);
-// }
-
+// --------------------------------------------------------------------------------------------
 // DCT device function
 __device__ void forwardDCT(
     const char* channel_data,
@@ -635,7 +629,6 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
     cudaEventCreate(&stop);
     float encode_time = 0.0f;
 
-
     _initQualityTables(quality_scale);
     _write_jpeg_header(fp);
     
@@ -643,9 +636,7 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
     cudaEventRecord(start);
     
     // Copy tables to device constant memory
-    cudaMemcpyToSymbol(YTable_d, m_YTable, sizeof(m_YTable));
     cudaMemcpyToSymbol(CbCrTable_d, m_CbCrTable, sizeof(m_CbCrTable));
-    cudaMemcpyToSymbol(ZigZag_d, ZigZag, sizeof(ZigZag));
 
     // Allocate device memory
     unsigned char *d_rgb;
@@ -679,7 +670,7 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
     cudaEventRecord(start);
     
     // Launch kernel
-    dim3 numBlocks((m_width + 7)/8, (m_height + 7)/8);
+    dim3 numBlocks( m_width/8, m_height/8 );
     dim3 threadsPerBlock(8, 8); // 64 threads for 8x8 block
     jpegCompressKernel<<<numBlocks, threadsPerBlock>>>(
         d_rgb, d_y, d_cb, d_cr,
@@ -698,11 +689,19 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
     // 開始計時 - return value from device
     cudaEventRecord(start);
 
-    // Allocate host memory for results
-    short* h_y_dct = new short[m_width * m_height];
-    short* h_cb_dct = new short[m_width * m_height];
-    short* h_cr_dct = new short[m_width * m_height];
-    
+    // Option 1 : Use pinned memory for transfer
+    #if USE_PINNED_MEMORY
+        short *h_y_dct, *h_cb_dct, *h_cr_dct;
+        cudaMallocHost(&h_y_dct, m_width * m_height * sizeof(short));
+        cudaMallocHost(&h_cb_dct, m_width * m_height * sizeof(short));
+        cudaMallocHost(&h_cr_dct, m_width * m_height * sizeof(short));
+    #else
+    // Option 2 : Allocate host memory for results
+        short* h_y_dct = new short[m_width * m_height];
+        short* h_cb_dct = new short[m_width * m_height];
+        short* h_cr_dct = new short[m_width * m_height];
+    #endif
+
     // Copy results back to host
     cudaMemcpy(h_y_dct, d_y_dct, dct_size, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_cb_dct, d_cb_dct, dct_size, cudaMemcpyDeviceToHost);
@@ -719,20 +718,69 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
     // 開始計時 - Huffman 編碼階段
     cudaEventRecord(start);
 
+// --------------------------------------------------------------------------------------------
     // Entropy encoding (kept on CPU)
     short prev_DC_Y = 0, prev_DC_Cb = 0, prev_DC_Cr = 0;
     int newByte = 0, newBytePos = 7;
+    // Option 1 
+    #if HUFFMAN_ALGO_OPTION
+        // Process each 8x8 block
+        for(int yPos = 0; yPos < m_height; yPos += 8) {
+            for(int xPos = 0; xPos < m_width; xPos += 8) {
+                int block_idx = (yPos/8 * (m_width/8) + xPos/8) * 64;
+                BitString outputBitString[128];
+                int bitStringCounts;
 
-    // Process each 8x8 block
-    for(int yPos = 0; yPos < m_height; yPos += 8) {
-        for(int xPos = 0; xPos < m_width; xPos += 8) {
-			int block_idx = (yPos/8 * (m_width/8) + xPos/8) * 64;
+                // Y channel Huffman encoding
+                _doHuffmanEncoding(
+                    h_y_dct + block_idx,
+                    prev_DC_Y,
+                    m_Y_DC_Huffman_Table,
+                    m_Y_AC_Huffman_Table,
+                    outputBitString,
+                    bitStringCounts
+                );
+                _write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
+
+                // Cb channel Huffman encoding
+                _doHuffmanEncoding(
+                    h_cb_dct + block_idx,
+                    prev_DC_Cb,
+                    m_CbCr_DC_Huffman_Table,
+                    m_CbCr_AC_Huffman_Table,
+                    outputBitString,
+                    bitStringCounts
+                );
+                _write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
+
+                // Cr channel Huffman encoding
+                _doHuffmanEncoding(
+                    h_cr_dct + block_idx,
+                    prev_DC_Cr,
+                    m_CbCr_DC_Huffman_Table,
+                    m_CbCr_AC_Huffman_Table,
+                    outputBitString,
+                    bitStringCounts
+                );
+                _write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
+            }
+        }
+    #else
+        // Option 2 
+        // 計算總區塊數
+        int blocks_count = (m_width * m_height) / (8 * 8);  // 總像素數除以每個block的像素數
+
+        // 遍歷所有區塊
+        for(int block_idx = 0; block_idx < blocks_count; block_idx++) {
             BitString outputBitString[128];
             int bitStringCounts;
+            
+            // 每個區塊是 64 個元素 (8x8)
+            int offset = block_idx * 64;
 
             // Y channel Huffman encoding
             _doHuffmanEncoding(
-                h_y_dct + block_idx,
+                h_y_dct + offset,
                 prev_DC_Y,
                 m_Y_DC_Huffman_Table,
                 m_Y_AC_Huffman_Table,
@@ -743,7 +791,7 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
 
             // Cb channel Huffman encoding
             _doHuffmanEncoding(
-                h_cb_dct + block_idx,
+                h_cb_dct + offset,
                 prev_DC_Cb,
                 m_CbCr_DC_Huffman_Table,
                 m_CbCr_AC_Huffman_Table,
@@ -754,7 +802,7 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
 
             // Cr channel Huffman encoding
             _doHuffmanEncoding(
-                h_cr_dct + block_idx,
+                h_cr_dct + offset,
                 prev_DC_Cr,
                 m_CbCr_DC_Huffman_Table,
                 m_CbCr_AC_Huffman_Table,
@@ -763,7 +811,8 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
             );
             _write_bitstring_(outputBitString, bitStringCounts, newByte, newBytePos, fp);
         }
-    }
+    #endif
+//--------------------------------------------------------------------------------------------
 
     // 記錄 Huffman 編碼時間
     cudaEventRecord(stop);
@@ -780,9 +829,15 @@ bool JpegEncoder::encodeToJPG(const char* fileName, int quality_scale)
     _write_word_(0xFFD9, fp);
     
     // Free memory
-    delete[] h_y_dct;
-    delete[] h_cb_dct;
-    delete[] h_cr_dct;
+    #if USE_PINNED_MEMORY
+        cudaFreeHost(h_y_dct);
+        cudaFreeHost(h_cb_dct);
+        cudaFreeHost(h_cr_dct);
+    #else
+        delete[] h_y_dct;
+        delete[] h_cb_dct;
+        delete[] h_cr_dct;
+    #endif
     
     cudaFree(d_rgb);
     cudaFree(d_y);
