@@ -1,13 +1,97 @@
 ================================= Performance Results ==========================
-Average over 5 runs:
+
+Results for image: test_1280x720.bmp
+
+Average over 10 runs:
 
 CUDA Memory Operations:
-   Memory Allocation & Transfer : 16.97 ms
-   Kernel Execution             : 12.40 ms
+   Host to Device Transfer      : 0.68 ms
+   Kernel Execution             : 2.34 ms
+   Device to Host Transfer      : 1.01 ms
 
 Execution Time:
-   Serial Version               : 4.526 seconds
-   CUDA Version                 : 0.688 seconds
-   Speedup                      : 6.579x
+   Serial Version               : 0.218 seconds
+   CUDA Version                 : 0.426 seconds
+   Speedup                      : 0.511x
+
+================================================================================
+
+Results for image: test_1920x1080.bmp
+
+Average over 10 runs:
+
+CUDA Memory Operations:
+   Host to Device Transfer      : 1.12 ms
+   Kernel Execution             : 2.55 ms
+   Device to Host Transfer      : 2.03 ms
+
+Execution Time:
+   Serial Version               : 0.488 seconds
+   CUDA Version                 : 0.390 seconds
+   Speedup                      : 1.252x
+
+================================================================================
+
+Results for image: test_2560x1440.bmp
+
+Average over 10 runs:
+
+CUDA Memory Operations:
+   Host to Device Transfer      : 1.93 ms
+   Kernel Execution             : 3.64 ms
+   Device to Host Transfer      : 3.52 ms
+
+Execution Time:
+   Serial Version               : 0.849 seconds
+   CUDA Version                 : 0.405 seconds
+   Speedup                      : 2.097x
+
+================================================================================
+
+Results for image: test_3840x2160.bmp
+
+Average over 10 runs:
+
+CUDA Memory Operations:
+   Host to Device Transfer      : 4.30 ms
+   Kernel Execution             : 6.61 ms
+   Device to Host Transfer      : 7.81 ms
+
+Execution Time:
+   Serial Version               : 1.941 seconds
+   CUDA Version                 : 0.423 seconds
+   Speedup                      : 4.593x
+
+================================================================================
+
+Results for image: test_5120x2880.bmp
+
+Average over 10 runs:
+
+CUDA Memory Operations:
+   Host to Device Transfer      : 7.10 ms
+   Kernel Execution             : 11.60 ms
+   Device to Host Transfer      : 13.73 ms
+
+Execution Time:
+   Serial Version               : 3.551 seconds
+   CUDA Version                 : 0.531 seconds
+   Speedup                      : 6.685x
+
+================================================================================
+
+Results for image: test_640x480.bmp
+
+Average over 10 runs:
+
+CUDA Memory Operations:
+   Host to Device Transfer      : 0.42 ms
+   Kernel Execution             : 1.50 ms
+   Device to Host Transfer      : 0.42 ms
+
+Execution Time:
+   Serial Version               : 0.072 seconds
+   CUDA Version                 : 0.356 seconds
+   Speedup                      : 0.203x
 
 ================================================================================
