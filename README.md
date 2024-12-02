@@ -28,7 +28,7 @@ python generateBMP.py
 ```
 ## (Option 2.) Run the test script on workstation
 
-### Use workstation to run test script
+### Use workstation to run test script on default image
 ```bash
 ./run_test.sh -s
 ```
