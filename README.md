@@ -39,6 +39,7 @@ python generateBMP.py
 ## Performance Results
 > See the Expiremental Results in `result.txt`
 
+The script will run 10 times on each image and calculate the average time it needs.
 
 ### Testing Hardware : 
 待補
