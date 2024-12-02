@@ -7,7 +7,7 @@ pip install numpy Pillow
 
 ### Generate test images
 ```bash
-python generate_test_images.py
+python generateBMP.py
 ```
 
 ## Run the test script on local
