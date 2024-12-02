@@ -7,6 +7,7 @@
 #define USED_SHARED_MEMORY 1
 #define USED_PINNED_MEMORY 1
 #define USED_CONSTANT_MEMORY 0
+#define CUDA_TIMING 0
 
 namespace {
 //-------------------------------------------------------------------------------
@@ -781,14 +782,8 @@ bool JpegEncoder::encodeToJPG_CUDA(const char* fileName, int quality_scale)
 	
 	_write_jpeg_header(fp);
 	
-	// 創建 CUDA events
-	// CUDA-based color convert & fdc
-	cudaEvent_t start, stop;
-	cudaEventCreate(&start);
-	cudaEventCreate(&stop);
-	float mem_time;
-	cudaEventRecord(start);
 
+	// CUDA-based color convert & fdc
 	unsigned char* d_rgbBuffer;
 	
 	const int blockSize = 8;
@@ -801,6 +796,15 @@ bool JpegEncoder::encodeToJPG_CUDA(const char* fileName, int quality_scale)
 	short *d_yQuant, *d_cbQuant, *d_crQuant;
 	unsigned char* d_quant_table_Y;
 	unsigned char* d_quant_table_CbCr;
+
+	#if CUDA_TIMING
+	float mem_time = 0.0f;
+	// 創建 CUDA events
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	cudaEventRecord(start);
+	#endif
 
 	cudaMalloc((void**)&d_rgbBuffer, m_width * m_height * 3 * sizeof(unsigned char));
 	cudaMalloc((void**)&d_yData, m_width*m_height * sizeof(char));
@@ -821,28 +825,40 @@ bool JpegEncoder::encodeToJPG_CUDA(const char* fileName, int quality_scale)
 	cudaMemcpy(d_quant_table_CbCr, m_CbCrTable, 64 * sizeof(unsigned char), cudaMemcpyHostToDevice);
 	#endif
 
+	#if CUDA_TIMING
 	cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&mem_time, start, stop);
-	printf("Memory allocation and transfer time: %.2f ms\n", mem_time);
+	printf("Memory allocation and transfer from [Host] to [Device] time: %.2f ms\n", mem_time);
 
 	float kernel_time = 0.0f;
     cudaEventRecord(start);
+	#endif
+
+	// Kernel Launch
     process<<<grid, block>>>(m_width, m_height, d_rgbBuffer, 
                         d_yData, d_cbData, d_crData,
                         d_yQuant, d_cbQuant, d_crQuant,
                         d_quant_table_Y, d_quant_table_CbCr);
     
     
+	#if CUDA_TIMING
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&kernel_time, start, stop);
     printf("Kernel Launching Time : %.2f ms\n", kernel_time);
+	#endif
+
 	cudaFree(d_rgbBuffer);
 
 	short* yQuant;
 	short* cbQuant;
 	short* crQuant;
+
+	#if CUDA_TIMING
+	float mem_time2 = 0.0f;
+	cudaEventRecord(start);
+	#endif
 
 	#if USED_PINNED_MEMORY
 	cudaHostAlloc((void**)&yQuant, m_width*m_height * sizeof(short), cudaHostAllocDefault);
@@ -857,6 +873,13 @@ bool JpegEncoder::encodeToJPG_CUDA(const char* fileName, int quality_scale)
 	cudaMemcpy(yQuant, d_yQuant, m_width*m_height * sizeof(short), cudaMemcpyDeviceToHost);
 	cudaMemcpy(cbQuant, d_cbQuant, m_width*m_height * sizeof(short), cudaMemcpyDeviceToHost);
 	cudaMemcpy(crQuant, d_crQuant, m_width*m_height * sizeof(short), cudaMemcpyDeviceToHost);
+
+	#if CUDA_TIMING
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&mem_time2, start, stop);
+	printf("Memory transfer from [Device] to [Host] time: %.2f ms\n", mem_time2);
+	#endif
 
 	//huffman coding
 	short prev_DC_Y = 0, prev_DC_Cb = 0, prev_DC_Cr = 0;
