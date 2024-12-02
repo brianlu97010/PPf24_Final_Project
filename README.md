@@ -1,4 +1,9 @@
 # Profiling
+## Steps
+1. Generate bmp file
+2. run the test script
+3. See the result in `result.txt`
+
 ## Generate the testing BMP file
 ### Requirements
 ```bash
@@ -10,7 +15,7 @@ pip install numpy Pillow
 python generateBMP.py
 ```
 
-## Run the test script on local
+## (Option 1.) Run the test script on local 
 ### Test with default image (img/sample3.bmp)
 ```bash
 ./run_test.sh
@@ -21,7 +26,7 @@ python generateBMP.py
 ```bash
 ./run_test.sh -a
 ```
-## Run the test script on workstation
+## (Option 2.) Run the test script on workstation
 
 ### Use workstation to run test script
 ```bash
@@ -33,7 +38,8 @@ python generateBMP.py
 ```
 ## Performance Results
 > See the Expiremental Results in `result.txt`
-> 
+
+
 ### Testing Hardware : 
 待補
 
