@@ -7,15 +7,10 @@ filename="img/sample_5184×3456.bmp"
 runs=10
 use_srun=0
 
-# 解析命令行參數
-for arg in "$@"; do
-    case $arg in
-        -s=*|--srun=*)
-        use_srun="${arg#*=}"
-        shift
-        ;;
-    esac
-done
+# 檢查是否有 -s 參數
+if [[ $* == *"-s"* ]]; then
+    use_srun=1
+fi
 
 declare -a host_to_dev_times=()
 declare -a kernel_times=()
@@ -31,7 +26,7 @@ else
     run_cmd="./jpeg"
 fi
 
-echo -e "\nRunning tests with${use_srun:+" srun"} command..."
+echo -e "\nRunning tests with ${run_cmd} command..."
 for i in $(seq 1 $runs); do
    printf "Test %d/%d [" $i $runs
    # Progress bar
