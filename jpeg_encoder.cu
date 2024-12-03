@@ -619,15 +619,14 @@ __constant__ char ZigZag_d[64] =
 35,36,48,49,57,58,62,63 
 };
 
+__constant__ float PI = 3.1415926f;
+
 #if USED_SHARED_MEMORY 
 __global__ void process(int m_width, int m_height, unsigned char* d_rgbBuffer,
-                       char* d_yData, char* d_cbData, char* d_crData,
                        short* d_yQuant, short* d_cbQuant, short* d_crQuant,
                        unsigned char* m_YTable, unsigned char* m_CbCrTable)
 {
-    const float PI = 3.1415926f;
-
-    // 宣告 shared memory 來存儲 8x8 區塊的數據
+	// Declare shared memory to store 8x8 block data
     __shared__ float s_yBlock[8][8];
     __shared__ float s_cbBlock[8][8];
     __shared__ float s_crBlock[8][8];
@@ -640,32 +639,24 @@ __global__ void process(int m_width, int m_height, unsigned char* d_rgbBuffer,
     int globalY = blockY * 8 + threadY;
     
     int blockIndex = (blockY * gridDim.x + blockX) * 64;
-    int threadIndex = threadY * 8 + threadX;
 
-    // 先載入數據到 shared memory
+	// 1. Color Transform
     if (globalX < m_width && globalY < m_height) {
         int rgbIndex = (globalY * m_width + globalX) * 3;
+		// Load RGB data from global memory to register
         unsigned char R = d_rgbBuffer[rgbIndex + 2];
         unsigned char G = d_rgbBuffer[rgbIndex + 1];
         unsigned char B = d_rgbBuffer[rgbIndex];
 
-        // 計算 YCbCr 並存入 shared memory
+        // Calculate YCbCr and stored into shared memory
         s_yBlock[threadY][threadX] = (0.299f * R + 0.587f * G + 0.114f * B - 128);
         s_cbBlock[threadY][threadX] = (-0.1687f * R - 0.3313f * G + 0.5f * B);
         s_crBlock[threadY][threadX] = (0.5f * R - 0.4187f * G - 0.0813f * B);
-
-        // 同時寫入全局記憶體
-        d_yData[blockIndex + threadIndex] = s_yBlock[threadY][threadX];
-        d_cbData[blockIndex + threadIndex] = s_cbBlock[threadY][threadX];
-        d_crData[blockIndex + threadIndex] = s_crBlock[threadY][threadX];
-    } else {
-        s_yBlock[threadY][threadX] = 0.0f;
-        s_cbBlock[threadY][threadX] = 0.0f;
-        s_crBlock[threadY][threadX] = 0.0f;
     }
     
     __syncthreads();
 
+	// 2. DCT
     if (globalX < m_width && globalY < m_height) {
         float alpha_u = (threadX == 0) ? 1.f / sqrtf(8.0f) : 0.5f;
         float alpha_v = (threadY == 0) ? 1.f / sqrtf(8.0f) : 0.5f;
@@ -680,17 +671,19 @@ __global__ void process(int m_width, int m_height, unsigned char* d_rgbBuffer,
                 float cosX = cosf((2 * x + 1) * threadX * PI / 16.0f);
                 float cosFactor = cosX * cosY;
                 
-                // 直接從 shared memory 讀取數據
+				// Load YCbCr data from shared memory and calculate DCT coeffiecient
                 tempY += s_yBlock[y][x] * cosFactor;
                 tempCb += s_cbBlock[y][x] * cosFactor;
                 tempCr += s_crBlock[y][x] * cosFactor;
             }
         }
 
-        // ZigZag & Quantization
+        // 3. Quantization
+		// Get zigzag index
         int zigZagIndex = ZigZag_d[threadY * 8 + threadX];
         float alpha = alpha_u * alpha_v;
         
+		// Calculate quantized DCT coefficient and store into global memory
         d_yQuant[blockIndex + zigZagIndex] = (short)(alpha * tempY / m_YTable[zigZagIndex]);
         d_cbQuant[blockIndex + zigZagIndex] = (short)(alpha * tempCb / m_CbCrTable[zigZagIndex]);
         d_crQuant[blockIndex + zigZagIndex] = (short)(alpha * tempCr / m_CbCrTable[zigZagIndex]);
@@ -702,8 +695,6 @@ __global__ void process(int m_width, int m_height, unsigned char* d_rgbBuffer,
 						short* d_yQuant, short* d_cbQuant, short* d_crQuant,
 						unsigned char* m_YTable, unsigned char* m_CbCrTable)
 {
-    const float PI = 3.1415926f;
-    
     int blockX = blockIdx.x;
     int blockY = blockIdx.y;
     int threadX = threadIdx.x;
@@ -791,16 +782,20 @@ bool JpegEncoder::encodeToJPG_CUDA(const char* fileName, int quality_scale)
 	const dim3 block(blockSize, blockSize);
 	const dim3 grid(gridX, gridY);
 
+	#if !USED_SHARED_MEMORY
 	char *d_yData, *d_cbData, *d_crData;
+	#endif
 	short *d_yQuant, *d_cbQuant, *d_crQuant;
 	unsigned char* d_quant_table_Y;
 	unsigned char* d_quant_table_CbCr;
 
 
 	cudaMalloc((void**)&d_rgbBuffer, m_width * m_height * 3 * sizeof(unsigned char));
+	#if !USED_SHARED_MEMORY
 	cudaMalloc((void**)&d_yData, m_width*m_height * sizeof(char));
 	cudaMalloc((void**)&d_cbData, m_width*m_height * sizeof(char));
 	cudaMalloc((void**)&d_crData, m_width*m_height * sizeof(char));
+	#endif
 	cudaMalloc((void**)&d_yQuant, m_width*m_height * sizeof(short));
 	cudaMalloc((void**)&d_cbQuant, m_width*m_height * sizeof(short));
 	cudaMalloc((void**)&d_crQuant, m_width*m_height * sizeof(short));
@@ -837,11 +832,16 @@ bool JpegEncoder::encodeToJPG_CUDA(const char* fileName, int quality_scale)
 	#endif
 
 	// Kernel Launch
-    process<<<grid, block>>>(m_width, m_height, d_rgbBuffer, 
+    #if USED_SHARED_MEMORY
+	process<<<grid, block>>>(m_width, m_height, d_rgbBuffer, 
+                        d_yQuant, d_cbQuant, d_crQuant,
+                        d_quant_table_Y, d_quant_table_CbCr);
+    #else
+	process<<<grid, block>>>(m_width, m_height, d_rgbBuffer, 
                         d_yData, d_cbData, d_crData,
                         d_yQuant, d_cbQuant, d_crQuant,
                         d_quant_table_Y, d_quant_table_CbCr);
-    
+    #endif
     
 	#if CUDA_TIMING
     cudaEventRecord(stop);
@@ -917,9 +917,11 @@ bool JpegEncoder::encodeToJPG_CUDA(const char* fileName, int quality_scale)
     delete[] crQuant;
     #endif
 
+	#if !USED_SHARED_MEMORY
 	cudaFree(d_yData);
     cudaFree(d_cbData);
     cudaFree(d_crData);
+	#endif
     cudaFree(d_yQuant);
     cudaFree(d_cbQuant);
     cudaFree(d_crQuant);
