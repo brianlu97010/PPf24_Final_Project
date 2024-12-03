@@ -2,8 +2,8 @@
 
 make clean && make
 
-output_file="result.txt"
-default_image="img/sample3.bmp"
+output_file="result_v2.txt"
+default_image="img/sample_5184×3456.bmp"
 runs=10
 use_srun=0
 run_all=0
